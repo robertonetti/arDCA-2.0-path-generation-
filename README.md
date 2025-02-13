@@ -1,5 +1,5 @@
 [![Paper](https://img.shields.io/badge/Published-Nat_Commun-green)](https://www.nature.com/articles/s41467-021-25756-4)
-[![License](https://img.shields.io/badge/Licence-Apache-red)](https://www.nature.com/articles/s41467-021-25756-4)
+[![License](https://img.shields.io/badge/License-Apache-red)](https://www.nature.com/articles/s41467-021-25756-4)
 
 # arDCA
 auto-regressive Direct Coupling Analysis (arDCA) 2.0.
