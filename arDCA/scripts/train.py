@@ -40,7 +40,7 @@ def main():
     print(template.format("Learning rate:", args.lr))
     print(template.format("L2 reg. for fields:", args.reg_h))
     print(template.format("L2 reg. for couplings:", args.reg_J))
-    print(template.format("Entropic order:", not args.no_entropic_order))
+    print(template.format("Entropic order:", "True" if not args.no_entropic_order else "False"))
     print(template.format("Convergence threshold:", args.epsconv))
     if args.pseudocount is not None:
         print(template.format("Pseudocount:", args.pseudocount))
@@ -58,12 +58,12 @@ def main():
     
     if args.label is not None:
         file_paths = {
-            "params" : folder / Path(f"{args.label}_params.dat"),
+            "params" : folder / Path(f"{args.label}_params.pth"),
         }
         
     else:
         file_paths = {
-            "params" : folder / Path(f"params.dat"),
+            "params" : folder / Path(f"params.pth"),
         }
     
     # Import dataset
@@ -132,11 +132,8 @@ def main():
     
     # Save the model
     print("Saving the model...")
-    model.save(file_paths["params"], tokens=tokens)
+    torch.save(model.state_dict(), file_paths["params"])
     print(f"Model saved in {file_paths['params']}")
-    
-    # Save the parameters of the model with torch
-    torch.save(model.state_dict(), folder / "model.pth")
     
     
 if __name__ == "__main__":

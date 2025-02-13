@@ -72,7 +72,8 @@ class arDCA(nn.Module):
         for i in range(self.L):
             self.mask[i, :, i, :] = 0
         self.remove_autocorr()
-        self.revert_entropic_order = None
+        # Sorting of the sites to the MSA ordering
+        self.sorting = nn.Parameter(torch.arange(self.L), requires_grad=False)
         
     def remove_autocorr(self):
         """Removes the self-interactions from the model."""
@@ -129,8 +130,9 @@ class arDCA(nn.Module):
             prob_i = self.forward(X[:, :i, :], beta=beta)
             sample_i = torch.multinomial(prob_i, num_samples=1).squeeze()
             X[:, i] = nn.functional.one_hot(sample_i, self.q).to(dtype=self.h.dtype)
-        if self.revert_entropic_order is not None:
-            X = X[:, self.revert_entropic_order, :]
+        
+        # MSA ordering
+        X = X[:, self.sorting, :]
             
         return X
     
@@ -170,10 +172,8 @@ class arDCA(nn.Module):
                 entropic_order = torch.cat([torch.tensor([0], device=entropic_order.device), entropic_order + 1])
             else:
                 entropic_order = get_entropic_order(fi)
-            self.revert_entropic_order = torch.argsort(entropic_order)
+            self.sorting.data = torch.argsort(entropic_order)
             X = X[:, entropic_order, :]
-        else:
-            self.revert_entropic_order = None
         # Target frequencies, if entropic order is used, the frequencies are sorted
         fi_target = get_freq_single_point(X, weights=weights, pseudo_count=pseudo_count)
         fij_target = get_freq_two_points(X, weights=weights, pseudo_count=pseudo_count)
@@ -192,6 +192,8 @@ class arDCA(nn.Module):
         for _ in range(max_epochs):
             optimizer.zero_grad()
             loss = loss_fn(self, X, weights, fi_target, fij_target, reg_h=reg_h, reg_J=reg_J)
+            if loss < 0:
+                raise ValueError("Negative loss encountered. Try to increase the regularization.")
             loss.backward()
             optimizer.step()
             self.remove_autocorr()
@@ -202,47 +204,5 @@ class arDCA(nn.Module):
             prev_loss = loss
         pbar.close()
         
-    def save(
-        self,
-        path: str,
-        tokens: str,
-    ) -> None:
-        """Saves the parameters of the model.
-        
-        Args:
-            path (str): Path to the file where to save the parameters.
-        """
-        params = {
-            "bias" : self.h.detach(),
-            "coupling_matrix" : self.J.detach(),
-        }
-        mask_save = torch.ones((self.L, self.q, self.L, self.q), dtype=torch.bool)
-        idx1_rm, idx2_rm = torch.triu_indices(self.L, self.L, offset=0)
-        mask_save[idx1_rm, :, idx2_rm, :] = 0
-        save_params(
-            fname=path,
-            params=params,
-            mask=mask_save,
-            tokens=tokens,
-        )
-        
-    def load(
-        self,
-        path: str,
-        tokens: str,
-    ) -> None:
-        params = load_params(
-            fname=path,
-            tokens=tokens,
-            device=self.h.device,
-            dtype=self.h.dtype,
-        )
-        self.h.data = params["bias"]
-        self.J.data = params["coupling_matrix"]
-        # Set to zero the upper triangular part of the couplings
-        mask = torch.ones((self.L, self.q, self.L, self.q), dtype=torch.bool, device=self.h.device)
-        idx1_rm, idx2_rm = torch.triu_indices(self.L, self.L, offset=0)
-        mask[idx1_rm, :, idx2_rm, :] = 0
-        self.J.data = self.J.data * mask
 
     
