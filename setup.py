@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='arDCA',
-    version='0.1.0',
+    version='0.1.1',
     author='Jeanne Trinquier, Lorenzo Rosset, Francesco Zamponi, Martin Weigt',
     maintainer='Lorenzo Rosset',
     author_email='rosset.lorenzo@gmail.com',

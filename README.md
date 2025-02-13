@@ -22,7 +22,7 @@ cd arDCA
 python -m pip install .
 ```
 ## Using the package
-We provide a Colab notebook where it is shown hot to train and sample an `arDCA` model using RNA sequences.
+We provide a [Colab notebook](https://colab.research.google.com/drive/1z0z0-CT6iW6g2lZEYfnEVsyVfcexfrHX?authuser=1#scrollTo=KzB5JgiDbw6X) where it is shown hot to train and sample an `arDCA` model using RNA sequences.
 
 Alternatively, one can install the package locally and run from the command line one of the two implemented routines:
 
@@ -52,7 +52,7 @@ where `num_sequences` is the number of sequences to be generated. The output wil
 If the argument `-d <path_data>` is provided, the script will also compute the Pearson correlation coefficient and the slope between the two-sites correlation matrix of the data and the generated samples.
 
 ## Licence
-Tish package is oen-sourced under the Apache License 2.0.
+This package is open-sourced under the Apache License 2.0.
 
 ## Citation
 If you use this package in your research, please cite
