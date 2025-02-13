@@ -1,5 +1,5 @@
 [![Paper](https://img.shields.io/badge/Published-Nat_Commun-green)](https://www.nature.com/articles/s41467-021-25756-4)
-[![Licence](https://img.shields.io/badge/Licence-Apache-red)](https://www.nature.com/articles/s41467-021-25756-4)
+[![License](https://img.shields.io/badge/Licence-Apache-red)](https://www.nature.com/articles/s41467-021-25756-4)
 
 # arDCA
 auto-regressive Direct Coupling Analysis (arDCA) 2.0.
@@ -51,7 +51,7 @@ where `num_sequences` is the number of sequences to be generated. The output wil
 
 If the argument `-d <path_data>` is provided, the script will also compute the Pearson correlation coefficient and the slope between the two-sites correlation matrix of the data and the generated samples.
 
-## Licence
+## License
 This package is open-sourced under the Apache License 2.0.
 
 ## Citation
