@@ -3,6 +3,7 @@ import torch.nn as nn
 from tqdm import tqdm
 from adabmDCA.stats import get_freq_single_point, get_freq_two_points
 from adabmDCA.io import save_params, load_params
+from torch.amp import autocast, GradScaler
 
 def get_entropic_order(fi: torch.Tensor) -> torch.Tensor:
     """Returns the entropic order of the sites in the MSA.
@@ -50,6 +51,29 @@ def loss_fn(
     return - log_likelihood + reg_h * torch.norm(model.h)**2 + reg_J * torch.norm(model.J)**2
 
 
+class EarlyStopping:
+    def __init__(self, patience=5, epsconv=0.01):
+        """
+        patience: How many epochs to wait before stopping if no improvement.
+        min_delta: Minimum change in the monitored value to qualify as an improvement.
+        """
+        self.patience = patience
+        self.epsconv = epsconv
+        self.best_loss = float("inf")
+        self.counter = 0
+    
+    def __call__(self, loss):
+        if loss < self.best_loss - self.epsconv:
+            self.best_loss = loss
+            self.counter = 0
+        else:
+            self.counter += 1
+        if self.counter >= self.patience:
+            return True
+        else:
+            return False
+
+
 class arDCA(nn.Module):
     def __init__(
         self,
@@ -79,6 +103,7 @@ class arDCA(nn.Module):
         """Removes the self-interactions from the model."""
         self.J.data = self.J.data * self.mask.data
 
+    @torch.autocast(device_type="cuda")
     def forward(
         self,
         X: torch.Tensor,
@@ -178,6 +203,9 @@ class arDCA(nn.Module):
         fi_target = get_freq_single_point(X, weights=weights, pseudo_count=pseudo_count)
         fij_target = get_freq_two_points(X, weights=weights, pseudo_count=pseudo_count)
         self.h.data = torch.log(fi_target + 1e-10)
+        # Use AMP GradScaler
+        scaler = GradScaler()
+        callback = EarlyStopping(patience=5, epsconv=epsconv)
         
         # Training loop
         pbar = tqdm(
@@ -188,20 +216,20 @@ class arDCA(nn.Module):
             ascii="-#",
         )
         pbar.set_description(f"Loss: inf")
-        prev_loss = float("inf")
         for _ in range(max_epochs):
             optimizer.zero_grad()
-            loss = loss_fn(self, X, weights, fi_target, fij_target, reg_h=reg_h, reg_J=reg_J)
+            with autocast("cuda"):
+                loss = loss_fn(self, X, weights, fi_target, fij_target, reg_h=reg_h, reg_J=reg_J)
             if loss < 0:
                 raise ValueError("Negative loss encountered. Try to increase the regularization.")
-            loss.backward()
-            optimizer.step()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             self.remove_autocorr()
             pbar.update(1)
             pbar.set_description(f"Loss: {loss.item():.3f}")
-            if torch.abs(loss - prev_loss) < epsconv:
+            if callback(loss):
                 break
-            prev_loss = loss
         pbar.close()
         
 

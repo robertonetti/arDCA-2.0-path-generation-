@@ -5,7 +5,6 @@ import numpy as np
 import torch
 
 from adabmDCA.dataset import DatasetDCA
-from adabmDCA.fasta import get_tokens
 from adabmDCA.stats import get_freq_single_point, get_freq_two_points, get_correlation_two_points
 from adabmDCA.utils import get_device, get_dtype
 from adabmDCA.functional import one_hot
@@ -82,8 +81,7 @@ def main():
     L = dataset.get_num_residues()
     q = dataset.get_num_states()
     
-    model = arDCA(L=L, q=q).to(device=device, dtype=dtype)
-    tokens = get_tokens(args.alphabet)
+    model = arDCA(L=L, q=q).to(device=device)
     
     # Save the weights if not already provided
     if args.weights is None:
