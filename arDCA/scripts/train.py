@@ -3,8 +3,10 @@ import argparse
 import numpy as np
 
 import torch
+import torch.nn as nn
 
 from adabmDCA.dataset import DatasetDCA
+from adabmDCA.fasta import get_tokens
 from adabmDCA.stats import get_freq_single_point, get_freq_two_points, get_correlation_two_points
 from adabmDCA.utils import get_device, get_dtype
 from adabmDCA.functional import one_hot
@@ -21,6 +23,9 @@ def create_parser():
     
     return parser
 
+# def compute_mean_error(X1, X2):
+#     """Compute the mean agreement between two predictions."""
+#     return (X1.argmax(dim=-1) == X2.argmax(dim=-1)).float().mean(dim=0)
 
 def main():
     
@@ -45,6 +50,10 @@ def main():
         print(template.format("Pseudocount:", args.pseudocount))
     print(template.format("Random seed:", args.seed))
     print(template.format("Data type:", args.dtype))
+    if args.path_graph is not None:
+        print(template.format("Input graph:", str(args.path_graph)))
+    if args.data_test is not None:
+        print(template.format("Input test MSA:", str(args.data_test)))
     print("\n")
     
     # Check if the data file exist
@@ -76,12 +85,19 @@ def main():
         device=device,
         dtype=dtype,
     )
+
     
     # Compute statistics of the data
     L = dataset.get_num_residues()
     q = dataset.get_num_states()
     
-    model = arDCA(L=L, q=q).to(device=device)
+    # Import graph from file
+    if args.path_graph:
+        print("Importing graph...")
+    graph = torch.load(args.path_graph) if args.path_graph else None
+
+    model = arDCA(L=L, q=q, graph=graph).to(device=device) # model = arDCA(L=L, q=q).to(device=device, dtype=dtype)
+    # tokens = get_tokens(args.alphabet)
     
     # Save the weights if not already provided
     if args.weights is None:
@@ -107,8 +123,21 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     
     print("\n")
+    data_test_oh = None
+    if args.data_test is not None:
+        dataset_test = DatasetDCA(
+            path_data=args.data_test,
+            path_weights=None,
+            alphabet=args.alphabet,
+            clustering_th=None,
+            no_reweighting=args.no_reweighting,
+            device=device,
+            dtype=dtype,
+        )
+        data_test_oh = one_hot(dataset_test.data, num_classes=q).to(dtype)
     
-    model.fit(
+    
+    loss = model.fit(
         X=data_oh,
         weights=dataset.weights,
         optimizer=optimizer,
@@ -119,19 +148,36 @@ def main():
         fix_first_residue=False,
         reg_h=args.reg_h,
         reg_J=args.reg_J,
+        X_test=data_test_oh,
     )
-    
+
+    # Compute Accuracy
+    predictions = model.predict_third_ML(data_oh)
+    err = model.compute_mean_error(predictions[:, 2 * model.L // 3:, :], data_oh[:, 2 * model.L // 3:, :]).mean().item()
+    print(f"TRAIN SET: Mean agreement between the predicted and the true sequence: {err}\n")
+    if args.data_test is not None:
+        predictions_test = model.predict_third_ML(data_test_oh)
+        err_test = model.compute_mean_error(predictions_test[:, 2 * model.L // 3:, :], data_test_oh[:, 2 * model.L // 3:, :]).mean().item()
+        print(f"TEST SET: Mean agreement between the predicted and the true sequence: {err_test}\n")
+
+
     # Sample from the model
-    samples = model.sample(n_samples=len(data_oh))
+    samples = model.sample_autoregressive(data_oh[:, 2 * model.L // 3:, :])
     pi = get_freq_single_point(samples)
     pij = get_freq_two_points(samples)
     pearson, _ = get_correlation_two_points(fi=fi_target, fij=fij_target, pi=pi, pij=pij)
     print(f"Pearson correlation of the two-site statistics: {pearson:.3f}")
+    print(f"Loss: {loss:.3f}\n")
+    
+    
+    pearson_third, _ = get_correlation_two_points(fi=fi_target[2 * model.L // 3:, :], fij=fij_target[2 * model.L // 3:, :, 2 * model.L // 3:, :], pi=pi[2 * model.L // 3:, :], pij=pij[2 * model.L // 3:, :, 2 * model.L // 3:, :])
+    print(f"Pearson correlation of the two-site statistics on the predicted sequence: {pearson_third:.3f}\n")
     
     # Save the model
     print("Saving the model...")
     torch.save(model.state_dict(), file_paths["params"])
     print(f"Model saved in {file_paths['params']}")
+
     
     
 if __name__ == "__main__":
