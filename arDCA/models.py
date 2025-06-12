@@ -6,181 +6,11 @@ from tqdm import tqdm
 # from adabmDCA.stats import get_freq_single_point, get_freq_two_points
 from adabmDCA.io import save_params, load_params
 from adabmDCA.functional import one_hot
-from adabmDCA.stats import get_freq_two_points, get_correlation_two_points
-
+from adabmDCA.stats import get_correlation_two_points, get_freq_single_point, get_freq_two_points
 
 import torch
 import torch.nn.functional as F
-
-def get_freq_single_point_batches(
-    data: torch.Tensor,
-    weights: torch.Tensor | None = None,
-    pseudo_count: float = 0.0,
-    batch_size: int = 32,
-    num_classes: int | None = None,
-    device: torch.device = torch.device("cuda"),
-    dtype: torch.dtype = torch.float32,
-) -> torch.Tensor:
-    """
-    Calcola le frequenze a singolo punto elaborando i dati per batch.
-    
-    Args:
-        data (torch.Tensor): Dati grezzi, ad esempio di forma (N, L) dove N è il numero di sequenze.
-        weights (torch.Tensor | None): Vettore dei pesi per ciascuna sequenza (forma (N,)) oppure None.
-        pseudo_count (float): Pseudo count da applicare (default 0.0).
-        batch_size (int): Dimensione dei batch per elaborare i dati.
-        num_classes (int | None): Numero di classi per l'encoding one-hot. Deve essere specificato.
-        device (torch.device): Dispositivo su cui eseguire i calcoli (default "cpu").
-        dtype (torch.dtype): Tipo di dato usato per i calcoli (default torch.float32).
-        
-    Returns:
-        torch.Tensor: Frequenze a singolo punto (shape (L, num_classes)).
-        
-    Raises:
-        ValueError: Se non viene passato il parametro num_classes.
-    """
-    if num_classes is None:
-        raise ValueError("Il parametro num_classes deve essere specificato per la codifica one-hot.")
-        
-    total_weight = 0.0
-    frequency_accum = None
-    N = data.shape[0]  # Numero totale di sequenze
-
-    for i in range(0, N, batch_size):
-        # Estrae il batch e lo porta sul device specificato
-        batch = data[i : i + batch_size].to(device)
-        
-        # Codifica one-hot: da (batch_size, L) a (batch_size, L, num_classes)
-        one_hot_batch = one_hot(batch, num_classes=num_classes).to(dtype)
-        
-        if weights is not None:
-            batch_weights = weights[i : i + batch_size].to(device, dtype=dtype)
-        else:
-            # Se non specificati, il peso è 1 per ogni sequenza
-            batch_weights = torch.ones(batch.shape[0], device=device, dtype=dtype)
-            
-        # Adattiamo il shape dei pesi in modo da poterne effettuare la broadcast
-        batch_weights = batch_weights.view(-1, 1, 1)
-        
-        # Calcola la somma pesata del batch lungo la dimensione delle sequenze (dim=0)
-        batch_freq = (one_hot_batch * batch_weights).sum(dim=0)  # shape: (L, num_classes)
-        
-        # Accumula le frequenze calcolate per il batch
-        if frequency_accum is None:
-            frequency_accum = batch_freq
-        else:
-            frequency_accum += batch_freq
-        
-        # Accumula il peso totale (non normalizzato) per il batch
-        total_weight += batch_weights.sum()
-    
-    # Frequenza complessiva: normale accumulazione pesata
-    overall_freq = frequency_accum / total_weight
-    
-    # Clampea (anche se in questo caso non dovrebbero esserci negativi) e applica il pseudo count
-    overall_freq.clamp_(min=0.0)
-    overall_freq = (1.0 - pseudo_count) * overall_freq + (pseudo_count / num_classes)
-    
-    return overall_freq
-
-
-
-# @torch.jit.script
-# def _get_freq_single_point(
-#     data: torch.Tensor,
-#     weights: torch.Tensor,
-#     pseudo_count: float,
-# ) -> torch.Tensor:    
-#     _, _, q = data.shape
-#     frequencies = (data * weights).sum(dim=0)
-#     # Set to zero the negative frequencies. Used for the reintegration.
-#     torch.clamp_(frequencies, min=0.0)
-
-#     return (1. - pseudo_count) * frequencies + (pseudo_count / q)
-
-# def get_freq_single_point(
-#     data: torch.Tensor,
-#     weights: torch.Tensor | None = None,
-#     pseudo_count: float = 0.0,
-# ) -> torch.Tensor:
-#     """Computes the single point frequencies of the input MSA.
-#     Args:
-#         data (torch.Tensor): One-hot encoded data array.
-#         weights (torch.Tensor | None, optional): Weights of the sequences.
-#         pseudo_count (float, optional): Pseudo count to be added to the frequencies. Defaults to 0.0.
-    
-#     Raises:
-#         ValueError: If the input data is not a 3D tensor.
-
-#     Returns:
-#         torch.Tensor: Single point frequencies.
-#     """
-#     if data.dim() != 3:
-#         raise ValueError(f"Expected data to be a 3D tensor, but got {data.dim()}D tensor instead")
-#     M = len(data)
-#     if weights is not None:
-#         norm_weights = weights.reshape(M, 1, 1) / weights.sum()
-#     else:
-#         norm_weights = torch.ones((M, 1, 1), device=data.device, dtype=data.dtype) / M
-    
-#     return _get_freq_single_point(data, norm_weights, pseudo_count)
-
-# @torch.jit.script
-# def _get_freq_two_points(
-#     data: torch.Tensor,
-#     weights: torch.Tensor,
-#     pseudo_count: float,
-# ) -> torch.Tensor:
-    
-#     M, L, q = data.shape
-#     data_oh = data.reshape(M, q * L)
-    
-#     fij = (data_oh * weights).T @ data_oh
-#     # Apply the pseudo count
-#     fij = (1. - pseudo_count) * fij + (pseudo_count / q**2)
-#     # Diagonal terms must represent the single point frequencies
-#     fi = get_freq_single_point(data, weights, pseudo_count).ravel()
-#     # Apply the pseudo count on the single point frequencies
-#     fij_diag = (1. - pseudo_count) * fi + (pseudo_count / q)
-#     # Set the diagonal terms of fij to the single point frequencies
-#     fij = torch.diagonal_scatter(fij, fij_diag, dim1=0, dim2=1)
-#     # Set to zero the negative frequencies. Used for the reintegration.
-#     torch.clamp_(fij, min=0.0)
-    
-#     return fij.reshape(L, q, L, q)
-
-
-# def get_freq_two_points(
-#     data: torch.Tensor,
-#     weights: torch.Tensor | None = None,
-#     pseudo_count: float = 0.0,
-# ) -> torch.Tensor:
-#     """
-#     Computes the 2-points statistics of the input MSA.
-
-#     Args:
-#         data (torch.Tensor): One-hot encoded data array.
-#         weights (torch.Tensor | None, optional): Array of weights to assign to the sequences of shape.
-#         pseudo_count (float, optional): Pseudo count for the single and two points statistics. Acts as a regularization. Defaults to 0.0.
-    
-#     Raises:
-#         ValueError: If the input data is not a 3D tensor.
-
-#     Returns:
-#         torch.Tensor: Matrix of two-point frequencies of shape (L, q, L, q).
-#     """
-#     if data.dim() != 3:
-#         raise ValueError(f"Expected data to be a 3D tensor, but got {data.dim()}D tensor instead")
-    
-#     M = len(data)
-#     if weights is not None:
-#         norm_weights = weights.reshape(M, 1) / weights.sum()
-#     else:
-#         norm_weights = torch.ones((M, 1), device=data.device, dtype=data.dtype) / M
-    
-#     return _get_freq_two_points(data, norm_weights, pseudo_count)
-
-
+import torchmetrics
 
 
 def get_entropic_order(fi: torch.Tensor) -> torch.Tensor:
@@ -195,6 +25,44 @@ def get_entropic_order(fi: torch.Tensor) -> torch.Tensor:
     site_entropy = -torch.sum(fi * torch.log(fi + 1e-10), dim=1)
    
     return torch.argsort(site_entropy, descending=False)
+
+
+
+def get_entropic_order_with_inverse(fi: torch.Tensor, index: int) -> (torch.Tensor, torch.Tensor):
+    """
+    Returns two vectors:
+      1) A full index ordering of the MSA sites such that:
+         - Sites 0 to index-1 remain in their original order
+         - Sites from index onward are sorted ascending by their site entropy
+      2) The inverse permutation that restores the original site order from the sorted order.
+
+    Args:
+        fi (torch.Tensor): Single-site frequencies of the MSA. Shape: (n_sites, n_states)
+        index (int): Starting site index to reorder by entropy.
+
+    Returns:
+        order (torch.Tensor): A 1D tensor of length n_sites containing a permutation of [0, ..., n_sites-1].
+        inverse_order (torch.Tensor): A 1D tensor such that order[inverse_order] = torch.arange(n_sites).
+    """
+    # Compute the entropy for each site: H_i = -sum_j fi_ij * log(fi_ij)
+    site_entropy = -torch.sum(fi * torch.log(fi + 1e-10), dim=1)
+    n_sites = site_entropy.size(0)
+    # Keep original order for sites before 'index'
+    prefix_indices = torch.arange(min(index, n_sites), device=fi.device)
+    # Sort the remaining sites by entropy
+    if index < n_sites:
+        suffix_entropy = site_entropy[index:]
+        sorted_suffix = torch.argsort(suffix_entropy, descending=False) + index
+    else:
+        sorted_suffix = torch.tensor([], dtype=torch.long, device=fi.device)
+    # Concatenate prefix (unchanged) with sorted suffix
+    order = torch.cat([prefix_indices, sorted_suffix], dim=0)
+    # Build inverse permutation: inverse_order[order[i]] = i
+    inverse_order = torch.empty(n_sites, dtype=torch.long, device=fi.device)
+    inverse_order[order] = torch.arange(n_sites, device=fi.device)
+
+    return order, inverse_order
+
 
 # Define the loss function
 def loss_fn(
@@ -347,12 +215,20 @@ class arDCA(nn.Module):
         self.restore_graph()
         # Sorting of the sites to the MSA ordering
         self.sorting = nn.Parameter(torch.arange(self.L), requires_grad=False)
+        self.entropic_order = None
+        self.inverse_entropic_order = None
+
         if model == "third":
             self.loss_fn = loss_third_fn
             self.test_fn = self.test_prediction_third
         elif model == "second":
             self.loss_fn = loss_second_fn
             self.test_fn = self.test_prediction_second
+        else: 
+            self.loss_fn = loss_fn 
+            self.test_fn = self.test_prediction_second
+        print(f"arDCA model initialized with {model}")
+
         
     def remove_autocorr(self):
         """Removes the self-interactions from the model."""
@@ -363,14 +239,12 @@ class arDCA(nn.Module):
             self.J.data = self.J.data * self.graph_J.data
             self.h.data = self.h.data * self.graph_h.data
 
-
     def forward(
         self,
         X: torch.Tensor,
         beta: float = 1.0,
     ) -> torch.Tensor:
         """Predicts the probability of next token given the previous ones.
-        
         Args:
             X (torch.Tensor): Input MSA one-hot encoded.
             beta (float, optional): Inverse temperature. Defaults to 1.0.
@@ -391,7 +265,6 @@ class arDCA(nn.Module):
         prob_i = torch.softmax(beta * logit_i, dim=-1)
         
         return prob_i
-    
     
     def sample(
         self,
@@ -502,6 +375,9 @@ class arDCA(nn.Module):
         reg_h: float = 0.0,
         reg_J: float = 0.0,
         X_test: torch.Tensor = None,
+        fij_target: torch.Tensor = None,
+        fi_target: torch.Tensor = None,
+        index: int = None,
     ) -> None:
         """Fits the model to the data.
         
@@ -519,69 +395,127 @@ class arDCA(nn.Module):
                 Used when the first residue encodes for the label. Defaults to False.
         """
 
-        fi = get_freq_single_point(X, weights=weights, pseudo_count=pseudo_count)
         
+
+        ro_fi_prediction, ro_fi_input, ro_cij_prediction, ro_cij_input, ro_cij_prediction_test = [], [], [], [], []
+
+        
+        
+        # Set Entropic Order if required
+        fi = get_freq_single_point(X, weights=weights, pseudo_count=pseudo_count)
         if use_entropic_order:
             if fix_first_residue:
-                entropic_order = get_entropic_order(fi[1:])
-                entropic_order = torch.cat([torch.tensor([0], device=entropic_order.device), entropic_order + 1])
+                entropic_order, inverse_entropic_order = get_entropic_order_with_inverse(fi[1:], index)
+                device = entropic_order.device
+                entropic_order = torch.cat([torch.tensor([0], device=device), entropic_order + 1])
+                inverse_entropic_order = torch.cat([torch.tensor([0], device=device), inverse_entropic_order + 1])
             else:
-                entropic_order = get_entropic_order(fi)
+                entropic_order, inverse_entropic_order = get_entropic_order_with_inverse(fi, index)
+
             self.sorting.data = torch.argsort(entropic_order)
+            self.entropic_order = entropic_order
+            self.inverse_entropic_order = inverse_entropic_order
             X = X[:, entropic_order, :]
+            X_test = X_test[:, entropic_order, :] if X_test is not None else None
+
+        
 
         # Target frequencies, if entropic order is used, the frequencies are sorted
         fi_target = get_freq_single_point(X, weights=weights, pseudo_count=pseudo_count)
-        fij_target = get_freq_two_points(X, weights=weights, pseudo_count=pseudo_count)
+        fij_target = get_freq_two_points(X, weights=weights,  pseudo_count=pseudo_count)
 
+        if X_test is not None:
+            weights_test = torch.ones(X_test.shape[0]).to(device=X_test.device)
+            fi_test = get_freq_single_point(X_test, weights=weights_test, pseudo_count=pseudo_count)
+            fij_test = get_freq_two_points(X_test,  weights=weights_test, pseudo_count=pseudo_count)
 
         self.h.data = torch.log(fi_target + 1e-10)
         callback = EarlyStopping(patience=50, epsconv=epsconv)
 
-        # Training loop
+        # Set Updating Bar
         pbar = tqdm(
             total=max_epochs,
             colour="red",
             dynamic_ncols=True,
             leave=False,
             ascii="-#",
+            desc="Loss: inf"
         )
-        pbar.set_description(f"Loss: inf")
-        metrics = {'Train Accuracy': f"{0.0}"}
+        metrics = {'Train Accuracy': "0.0"}
         if X_test is not None:
-            metrics['Test Accuracy'] = f"{0.0}"
+            metrics.update({'Test Accuracy': "0.0",
+                'Shuffled Test Accuracy': "0.0"})
+            val_losses = []
         pbar.set_postfix(metrics)
 
-        prev_loss = float("inf")
 
+        # Training Loop
+        losses = []
         for epoch in range(max_epochs):
             optimizer.zero_grad()
             loss = self.loss_fn(self, X, weights, fi_target, fij_target, reg_h=reg_h, reg_J=reg_J)
-            if loss < 0:
+            loss_value = loss.item()
+            if loss_value < 0:
                 raise ValueError("Negative loss encountered. Try to increase the regularization.")
+            losses.append(loss_value)
+
             loss.backward()
             optimizer.step()
+
             self.restore_graph()
             self.remove_autocorr()
-            
-            pbar.update(1)
-            pbar.set_description(f"Loss: {loss.item():.3f}")
+
+            pbar.update()  # defaults to +1
+            pbar.set_description(f"Loss: {loss_value:.3f}")
+
+
             if epoch % 10 == 0:
+                # Compute Accuracy
                 metrics = {'Train Accuracy': f"{self.test_fn(X):.5f}"}
                 if X_test is not None:
-                    metrics['Test Accuracy'] = f"{self.test_fn(X_test):.5f}"
+                    X_test_shuffle = X_test.clone()
+                    X_test_shuffle[:, index:, :] = X_test[torch.randperm(X_test.size(0)), index:, :]
+                    metrics.update({'Test Accuracy':           f"{self.test_fn(X_test):.5f}",
+                                    'Shuffled Test Accuracy':  f"{self.test_fn(X_test_shuffle):.5f}"})
                 pbar.set_postfix(metrics)
-                    
-            # if torch.abs(loss - prev_loss) < epsconv:
-            #     break
-            # prev_loss = loss
-                            
+                # Compute Training Pearson Cij
+                samples = self.sample_autoregressive(X[:, :index, :])
+                data, data_target = samples[:, index:, :], X[:, index:, :]
+                pi, pij  = get_freq_single_point(data=data, weights=weights, pseudo_count=pseudo_count), get_freq_two_points(  data=data, weights=weights, pseudo_count=pseudo_count)
+                fi_target_pred, fij_target_pred  = get_freq_single_point(data=data_target, weights=weights, pseudo_count=pseudo_count), get_freq_two_points(  data=data_target, weights=weights, pseudo_count=pseudo_count)
+                pearson_cij_prediction, _ = get_correlation_two_points(fi=fi_target_pred, fij=fij_target_pred, pi=pi, pij=pij)
+                metrics['Pearson cij (Train)'] = f"{pearson_cij_prediction:.5f}"
+                ro_cij_prediction.append(pearson_cij_prediction)
+
+
+                if X_test is not None:
+                    with torch.no_grad():
+                        val_loss = self.loss_fn(self, X_test, weights_test, fi_test, fij_test, reg_h=reg_h, reg_J=reg_J)
+                        val_losses.append(val_loss.item())
+                        metrics['Val Loss'] = f"{val_loss:.5f}"
+
+                    samples = self.sample_autoregressive(X_test[:, :index, :]) 
+                    data, data_target = samples[:, index:, :], X_test[:, index:, :]
+                    pi, pij = get_freq_single_point(data), get_freq_two_points(data)
+                    fi_target_pred, fij_target_pred = get_freq_single_point(data=data_target, weights=weights_test, pseudo_count=pseudo_count), get_freq_two_points(data=data_target, weights=weights_test, pseudo_count=pseudo_count)
+                    pearson_cij_prediction_test, _ = get_correlation_two_points(fi=fi_target_pred, fij=fij_target_pred, pi=pi, pij=pij)
+                    metrics['Pearson cij (Test)'] = f"{pearson_cij_prediction_test:.5f}"
+                    ro_cij_prediction_test.append(pearson_cij_prediction_test)
+                pbar.set_postfix(metrics)
 
             if callback(loss):
                 break
+
         pbar.close()
-        return loss
+        return loss, ro_fi_prediction, ro_fi_input, ro_cij_prediction, ro_cij_input, ro_cij_prediction_test, losses, val_losses
         
+
+
+
+
+
+
+
 
     def fit_batch(
         self,

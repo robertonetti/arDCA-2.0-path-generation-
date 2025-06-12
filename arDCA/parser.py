@@ -8,8 +8,8 @@ def add_args_dca(parser : argparse.ArgumentParser) -> argparse.ArgumentParser:
     # Optional arguments
     dca_args.add_argument("-l", "--label",        type=str,   default=None,         help="(Defaults to None). If provoded, adds a label to the output files inside the output folder.")
     dca_args.add_argument("--alphabet",           type=str,   default="protein",    help="(Defaults to protein). Type of encoding for the sequences. Choose among ['protein', 'rna', 'dna'] or a user-defined string of tokens.")
-    # dca_args.add_argument("--no_entropic_order",  action="store_true",              help="If provided, the entropic order is not used for the sequences.")
-    dca_args.add_argument("--no_entropic_order",  type=bool,  default=True,         help="If provided, the entropic order is not used for the sequences.")
+    dca_args.add_argument("--no_entropic_order",  action="store_true",              help="If provided, the entropic order is not used for the sequences.")
+  # dca_args.add_argument("--no_entropic_order",  type=bool,  default=True,         help="If provided, the entropic order is not used for the sequences.")
     dca_args.add_argument("--data_test",          type=Path,  default=None,         help="Filename of the dataset to be used for training the model.")
     dca_args.add_argument("--lr",                 type=float, default=0.005,        help="(Defaults to 0.005). Learning rate.")
     dca_args.add_argument("--reg_h",              type=float, default=1e-6,         help="(Defaults to 1e-6). L2 regularization parameter for the fields.")

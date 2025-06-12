@@ -128,7 +128,7 @@ class DatasetDCA(Dataset):
         
         # Select the proper encoding
         self.tokens = get_tokens(alphabet)
-        
+        print("tokens: ", self.tokens)
         # Automatically detects if the file is in fasta format and imports the data
         with open(path_data, "r") as f:
             first_line = f.readline()
