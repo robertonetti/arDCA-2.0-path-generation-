@@ -170,3 +170,15 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 *.ipynb
+
+data/
+graphs/
+arDCA_new/
+model_normal_graph/
+model_profile_graph/
+models_evotimescales/
+models_graphs/
+models_prediction_second/
+run_arDCA.sh
+run_sequencial.sh
+run_arDCA_in_row.sh
