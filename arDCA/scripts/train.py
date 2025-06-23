@@ -138,7 +138,6 @@ def main():
         data_oh = one_hot(dataset.data, num_classes=q).to(dtype)
         fi_target = get_freq_single_point(data=data_oh, weights=dataset.weights, pseudo_count=args.pseudocount)
         fij_target = get_freq_two_points(data=data_oh, weights=dataset.weights, pseudo_count=args.pseudocount)
-
         
     # Define the optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -159,7 +158,7 @@ def main():
             data_test_oh = one_hot(dataset_test.data, num_classes=q).to(dtype)
 
     if args.batch_size is not None:
-        loss = model.fit_batch(
+        loss, losses, log_likelihoods, val_losses, val_log_likelihoods = model.fit_batch(
             X                  = dataset.data,
             weights            = dataset.weights,
             optimizer          = optimizer,
@@ -171,10 +170,11 @@ def main():
             reg_h              = args.reg_h,
             reg_J              = args.reg_J,
             X_test             = dataset_test.data,
-            batch_size         = args.batch_size
+            batch_size         = args.batch_size,
+            index              = index
         )
     else:
-        loss, ro_fi_prediction, ro_fi_input, ro_cij_prediction, ro_cij_input, ro_cij_prediction_test, losses, val_losses = model.fit(
+        loss, ro_fi_prediction, ro_fi_input, ro_cij_prediction, ro_cij_input, ro_cij_prediction_test, losses, val_losses, log_likelihoods, val_log_likelihoods = model.fit(
                     X                  =data_oh,
                     weights            =dataset.weights,
                     optimizer          =optimizer,
@@ -197,40 +197,43 @@ def main():
     torch.save(model.state_dict(), file_paths["params"])
     print(f"Model saved in {file_paths['params']}")
 
-    # First plot: Pearson correlation
-    plt.figure()                           # ← start a new figure
-    plt.plot(ro_cij_prediction,      label="cij Train")
-    plt.plot(ro_cij_prediction_test, label="cij Test")
-    plt.legend()
-    plt.xlabel("Epoch")
-    plt.ylabel("Pearson correlation")
-    plt.title("Pearson correlation")
-    plt.savefig(folder / "pearson.png")
-    plt.close()                           # ← close it when you’re done
+    if args.batch_size is None:
+        # First plot: Pearson correlation
+        plt.figure()                           # ← start a new figure
+        plt.plot(ro_cij_prediction,      label="cij Train")
+        plt.plot(ro_cij_prediction_test, label="cij Test")
+        plt.legend()
+        plt.xlabel("Epoch")
+        plt.ylabel("Pearson correlation")
+        plt.title("Pearson correlation")
+        plt.savefig(folder / "pearson.png")
+        plt.close()                           # ← close it when you’re done
 
     # Second plot: Loss curves
     x_train = np.arange(len(losses))
-    # asse x per la validation, sparso uniformemente su tutto l'intervallo di losses
     x_val = np.linspace(0, len(losses) - 1, len(val_losses))
     plt.figure()
-    plt.plot(x_train,     losses,     label="Train")
-    plt.plot(x_val,       val_losses, label="Validation")
+    plt.plot(x_train,     losses,     label="Loss Train")
+    plt.plot(x_val,       val_losses, label="Loss Validation")
+    plt.plot(x_train,     log_likelihoods,     label="LogLike Train")
+    plt.plot(x_val,       val_log_likelihoods, label="LogLike Validation")
     plt.legend()
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
     plt.title("Loss")
+    plt.grid(True)
     plt.savefig(folder / "loss.png")
     plt.close()
             
         
     if args.batch_size is None:
         # Compute Accuracy
-        if model.entropic_order is None: 
-            data_oh_ordered = data_oh[:, model.sorting, :].clone()
-            data_test_oh_ordered = data_test_oh[:, model.sorting, :].clone()
+        if args.no_entropic_order is True: 
+            data_oh_ordered = data_oh.clone()
+            data_test_oh_ordered = data_test_oh.clone()
         else: 
-            data_oh_ordered = data_oh[:, model.entropic_order, :].clone()  
-            data_test_oh_ordered = data_test_oh[:, model.entropic_order, :].clone()
+            data_oh_ordered = data_oh[:, model.entropic_order.cpu().numpy(), :].clone()  
+            data_test_oh_ordered = data_test_oh[:, model.entropic_order.cpu().numpy(), :].clone()
 
         err = model.test_fn(data_oh_ordered)
         print(f"TRAIN SET: Mean agreement between the predicted and the true sequence: {err}\n")
