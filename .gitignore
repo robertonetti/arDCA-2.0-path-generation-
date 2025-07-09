@@ -184,3 +184,5 @@ run_arDCA.sh
 run_sequencial.sh
 run_arDCA_in_row.sh
 slurm_outputs/
+arDCA_CM.err
+run_arDCA_in_row.sh
