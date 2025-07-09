@@ -177,6 +177,7 @@ arDCA_new/
 model_normal_graph/
 model_profile_graph/
 models_evotimescales/
+models/
 models_graphs/
 models_prediction_second/
 run_arDCA.sh
