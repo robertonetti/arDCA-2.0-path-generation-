@@ -183,3 +183,4 @@ models_prediction_second/
 run_arDCA.sh
 run_sequencial.sh
 run_arDCA_in_row.sh
+slurm_outputs/
