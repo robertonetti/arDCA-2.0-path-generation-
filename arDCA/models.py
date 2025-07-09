@@ -12,6 +12,18 @@ import torch
 import torch.nn.functional as F
 import torchmetrics
 
+def get_freq_single_point_batches(X, weights, pseudo_count, batch_size, num_classes, device):
+
+    M_tot = X.shape[0]
+    fi = torch.zeros((X.shape[1], num_classes), dtype=torch.float32, device=device)
+    for start in range(0, M_tot, batch_size):
+        end = min(start + batch_size, M_tot)
+        batch = X[start:end]      # shape: (batch_actual_size, L)
+        batch_weights = weights[start:end] 
+        batch_oh = one_hot(batch, num_classes=num_classes).to(dtype=torch.float32, device=device)  # shape: (batch_actual_size, L, q)
+        fi += get_freq_single_point(batch_oh, weights=batch_weights, pseudo_count=pseudo_count)
+    return fi / (M_tot // batch_size + 1)  # Average over batches
+
 
 def get_entropic_order(fi: torch.Tensor) -> torch.Tensor:
     """Returns the entropic order of the sites in the MSA.
@@ -94,7 +106,7 @@ def loss_fn(
         logZ_i = torch.logsumexp(model.h[i] + X[:, :i, :].view(n_samples, -1) @ model.J[i, :, :i, :].view(q, -1).mT, dim=-1) @ weights
         log_likelihood += energy_i - logZ_i
     
-    return - log_likelihood + reg_h * torch.norm(model.h)**2 + reg_J * torch.norm(model.J)**2
+    return - log_likelihood + reg_h * torch.norm(model.h)**2 + reg_J * torch.norm(model.J)**2, - log_likelihood
 
 # Define the loss function
 def loss_third_fn(
@@ -126,7 +138,7 @@ def loss_third_fn(
         logZ_i = torch.logsumexp(model.h[i] + X[:, :i, :].view(n_samples, -1) @ model.J[i, :, :i, :].view(q, -1).mT, dim=-1) @ weights
         log_likelihood += energy_i - logZ_i
     
-    return - log_likelihood + reg_h * torch.norm(model.h)**2 + reg_J * torch.norm(model.J)**2
+    return - log_likelihood + reg_h * torch.norm(model.h)**2 + reg_J * torch.norm(model.J)**2, - log_likelihood
 
 # Define the loss function
 def loss_second_fn(
@@ -158,7 +170,7 @@ def loss_second_fn(
         logZ_i = torch.logsumexp(model.h[i] + X[:, :i, :].view(n_samples, -1) @ model.J[i, :, :i, :].view(q, -1).mT, dim=-1) @ weights
         log_likelihood += energy_i - logZ_i
     
-    return - log_likelihood + reg_h * torch.norm(model.h)**2 + reg_J * torch.norm(model.J)**2
+    return - log_likelihood + reg_h * torch.norm(model.h)**2 + reg_J * torch.norm(model.J)**2, - log_likelihood
 
 
 class EarlyStopping:
@@ -215,8 +227,9 @@ class arDCA(nn.Module):
         self.restore_graph()
         # Sorting of the sites to the MSA ordering
         self.sorting = nn.Parameter(torch.arange(self.L), requires_grad=False)
-        self.entropic_order = None
-        self.inverse_entropic_order = None
+        self.entropic_order = nn.Parameter(torch.empty(self.L), requires_grad=False)
+        self.inverse_entropic_order = nn.Parameter(torch.empty(self.L), requires_grad=False)
+        
 
         if model == "third":
             self.loss_fn = loss_third_fn
@@ -413,12 +426,10 @@ class arDCA(nn.Module):
                 entropic_order, inverse_entropic_order = get_entropic_order_with_inverse(fi, index)
 
             self.sorting.data = torch.argsort(entropic_order)
-            self.entropic_order = entropic_order
-            self.inverse_entropic_order = inverse_entropic_order
+            self.entropic_order.data = entropic_order 
+            self.inverse_entropic_order.data =  inverse_entropic_order 
             X = X[:, entropic_order, :]
             X_test = X_test[:, entropic_order, :] if X_test is not None else None
-
-        
 
         # Target frequencies, if entropic order is used, the frequencies are sorted
         fi_target = get_freq_single_point(X, weights=weights, pseudo_count=pseudo_count)
@@ -445,19 +456,20 @@ class arDCA(nn.Module):
         if X_test is not None:
             metrics.update({'Test Accuracy': "0.0",
                 'Shuffled Test Accuracy': "0.0"})
-            val_losses = []
+            val_losses, val_log_likelihoods = [], []
         pbar.set_postfix(metrics)
 
 
         # Training Loop
-        losses = []
+        losses, log_likelihoods = [], []
         for epoch in range(max_epochs):
             optimizer.zero_grad()
-            loss = self.loss_fn(self, X, weights, fi_target, fij_target, reg_h=reg_h, reg_J=reg_J)
+            loss, log_likelihood = self.loss_fn(self, X, weights, fi_target, fij_target, reg_h=reg_h, reg_J=reg_J)
             loss_value = loss.item()
             if loss_value < 0:
                 raise ValueError("Negative loss encountered. Try to increase the regularization.")
             losses.append(loss_value)
+            log_likelihoods.append(log_likelihood.item())
 
             loss.backward()
             optimizer.step()
@@ -490,8 +502,9 @@ class arDCA(nn.Module):
 
                 if X_test is not None:
                     with torch.no_grad():
-                        val_loss = self.loss_fn(self, X_test, weights_test, fi_test, fij_test, reg_h=reg_h, reg_J=reg_J)
+                        val_loss, val_log_likelihood = self.loss_fn(self, X_test, weights_test, fi_test, fij_test, reg_h=reg_h, reg_J=reg_J)
                         val_losses.append(val_loss.item())
+                        val_log_likelihoods.append(val_log_likelihood.item())
                         metrics['Val Loss'] = f"{val_loss:.5f}"
 
                     samples = self.sample_autoregressive(X_test[:, :index, :]) 
@@ -507,8 +520,9 @@ class arDCA(nn.Module):
                 break
 
         pbar.close()
-        return loss, ro_fi_prediction, ro_fi_input, ro_cij_prediction, ro_cij_input, ro_cij_prediction_test, losses, val_losses
+        return loss, ro_fi_prediction, ro_fi_input, ro_cij_prediction, ro_cij_input, ro_cij_prediction_test, losses, val_losses, log_likelihoods, val_log_likelihoods
         
+
 
 
 
@@ -530,7 +544,8 @@ class arDCA(nn.Module):
         reg_h: float = 0.0,
         reg_J: float = 0.0,
         X_test: torch.Tensor = None,
-        batch_size: int = 500 #32
+        batch_size: int = 500,
+        index: int = None,
     ) -> None:
         """
         Adatta il modello ai dati, suddividendo il training e il test in mini batch.
@@ -549,18 +564,26 @@ class arDCA(nn.Module):
             X_test (torch.Tensor, opzionale): Dati di test (senza pesi).
             batch_size (int, opzionale): Dimensione dei mini batch.
         """       
+        
+
         # Riordinamento entropico se richiesto
+        fi = get_freq_single_point_batches(X, weights=weights, pseudo_count=pseudo_count, batch_size=batch_size, num_classes=self.q, device=self.h.device)
         if use_entropic_order:
             if fix_first_residue:
-                entropic_order = get_entropic_order(fi[1:])
-                entropic_order = torch.cat([torch.tensor([0], device=entropic_order.device), entropic_order + 1])
+                entropic_order, inverse_entropic_order = get_entropic_order_with_inverse(fi[1:], index)
+                device = entropic_order.device
+                entropic_order = torch.cat([torch.tensor([0], device=device), entropic_order + 1])
+                inverse_entropic_order = torch.cat([torch.tensor([0], device=device), inverse_entropic_order + 1])
             else:
-                entropic_order = get_entropic_order(fi)
+                entropic_order, inverse_entropic_order = get_entropic_order_with_inverse(fi, index)
             self.sorting.data = torch.argsort(entropic_order)
-            X = X[:, entropic_order, :]
-        
+            self.entropic_order.data = entropic_order 
+            self.inverse_entropic_order.data =  inverse_entropic_order 
+            X = X[:, entropic_order]
+            X_test = X_test[:, entropic_order] if X_test is not None else None
+
         # Calcolo delle frequenze target (fi e fij)
-        fi_target = get_freq_single_point_batches(X, weights=weights, pseudo_count=pseudo_count, batch_size=batch_size, num_classes=self.q, device=self.h.device) # get_freq_single_point(X, weights=weights, pseudo_count=pseudo_count)
+        fi_target = get_freq_single_point_batches(X, weights=weights, pseudo_count=pseudo_count, batch_size=batch_size, num_classes=self.q, device=self.h.device)
         self.h.data = torch.log(fi_target + 1e-10)
         
         # Creazione dei DataLoader per training e test
@@ -574,40 +597,59 @@ class arDCA(nn.Module):
         
         callback = EarlyStopping(patience=5, epsconv=epsconv)
         
-        pbar = tqdm(total=max_epochs, colour="red", dynamic_ncols=True, leave=False, ascii="-#")
-        pbar.set_description(f"Loss: inf")
-        metrics = {'Train Accuracy': f"{0.0}"}
+       # Set Updating Bar
+        pbar = tqdm(
+            total=max_epochs,
+            colour="red",
+            dynamic_ncols=True,
+            leave=False,
+            ascii="-#",
+            desc="Loss: inf"
+        )
+        metrics = {'Train Accuracy': "0.0"}
         if X_test is not None:
-            metrics['Test Accuracy'] = f"{0.0}"
+            metrics.update({'Test Accuracy': "0.0"})
+            val_losses, val_log_likelihoods = [], []
         pbar.set_postfix(metrics)
-        
-        prev_loss = float("inf")
+
+
+        losses, log_likelihoods = [], []
+        losses_val, log_likelihoods_val = [], []
         for epoch in range(max_epochs):
-            epoch_loss = 0.0
+            epoch_loss, epoch_log_likelihood = 0.0, 0.0
             # Ciclo sui mini batch del training
             for batch_X, batch_weights in train_loader:
                 optimizer.zero_grad()
                 batch_X = one_hot(batch_X, num_classes=self.q).to(self.h.dtype) 
                 fij_target = get_freq_two_points(batch_X, weights=batch_weights, pseudo_count=pseudo_count)
                 # Calcolo della loss sul mini batch
-                loss = self.loss_fn(self, batch_X, batch_weights, fi_target, fij_target, reg_h=reg_h, reg_J=reg_J)
+                loss, log_likelihood = self.loss_fn(self, batch_X, batch_weights, fi_target, fij_target, reg_h=reg_h, reg_J=reg_J)
                 if loss.item() < 0:
                     raise ValueError("Negative loss encountered. Try to increase the regularization.")
                 loss.backward()
                 optimizer.step()
+
                 self.restore_graph()
                 self.remove_autocorr()
+
                 # Accumulo della loss pesata per il numero di campioni nel batch
                 epoch_loss += loss.item() * batch_X.size(0)
+                epoch_log_likelihood += log_likelihood.item() * batch_X.size(0)
             
             # Calcolo della loss media sull’intero training set
             epoch_loss /= len(train_dataset)
-            pbar.update(1)
+            epoch_log_likelihood /= len(train_dataset)
+
+            losses.append(epoch_loss)
+            log_likelihoods.append(epoch_log_likelihood)
+            # Aggiornamento della barra di progresso
+            pbar.update()  # defaults to +1
             pbar.set_description(f"Loss: {epoch_loss:.3f}")
             
             if epoch % 10 == 0:
-                # Valutazione sulla parte di training
+                # Compute Accuracy
                 with torch.no_grad():
+
                     train_acc = 0 
                     for X_batch in train_loader:
                         X_batch = one_hot(X_batch[0], num_classes=self.q).to(dtype=self.h.dtype)
@@ -617,9 +659,26 @@ class arDCA(nn.Module):
                     # Valutazione sul test set se definito
                     if X_test is not None:
                         test_acc = 0 
+                        epoch_loss_val, epoch_log_likelihood_val = 0, 0
                         for X_batch in test_loader:
+                            batch_weights = torch.ones(X_batch[0].size(0), device=X_batch[0].device)
                             X_batch = one_hot(X_batch[0], num_classes=self.q).to(dtype=self.h.dtype)
                             test_acc += self.test_fn(X_batch)
+
+                            fij_target = get_freq_two_points(X_batch, weights=batch_weights, pseudo_count=pseudo_count)
+                            loss_val, log_likelihood_val = self.loss_fn(self, X_batch, batch_weights, fi_target, fij_target, reg_h=reg_h, reg_J=reg_J)
+
+                            epoch_loss_val += loss_val.item() * X_batch.size(0)
+                            epoch_log_likelihood_val += log_likelihood_val.item() * X_batch.size(0)
+
+                        epoch_loss_val /= len(test_dataset)
+                        epoch_log_likelihood_val /= len(test_dataset)
+
+                        losses_val.append(epoch_loss_val)
+                        log_likelihoods_val.append(epoch_log_likelihood_val)
+
+                        metrics['Val Loss'] = f"{epoch_loss_val:.5f}"
+
                         # Unisci tutti i batch in un unico tensore
                         test_acc /= len(test_loader)
                         metrics = {'Train Accuracy': f"{train_acc:.5f}", 'Test Accuracy': f"{test_acc:.5f}"}
@@ -630,5 +689,6 @@ class arDCA(nn.Module):
                 
             if callback(torch.tensor(epoch_loss)):
                 break
+
         pbar.close()
-        return epoch_loss
+        return epoch_loss, losses, log_likelihoods, losses_val, log_likelihoods_val
