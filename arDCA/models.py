@@ -75,6 +75,36 @@ def get_entropic_order_with_inverse(fi: torch.Tensor, index: int) -> (torch.Tens
 
     return order, inverse_order
 
+def energy_third(model: nn.Module, X: torch.Tensor) -> torch.Tensor:
+    """Computes the energy of third sequence given first and second.
+    Args:
+        model (nn.Module): arDCA model.
+        X (torch.Tensor): Input MSA one-hot encoded.
+    """
+    if X.dim() != 3:
+        raise ValueError("X must be a 3D tensor")
+    n_samples, L_data, q = X.shape
+    if L_data != model.L:
+        raise ValueError("X and model should have same sequence length L")
+    energy = torch.zeros(n_samples)
+    logZ   = torch.zeros(n_samples)
+    logP   = torch.zeros(n_samples)
+    for i in range(2*model.L//3, model.L):
+        #                           q                               n,[:i]q x [:i]q, q -> n,q                  n,q 
+        logZ = torch.logsumexp(model.h[i] + X[:, :i, :].view(n_samples, -1) @ model.J[i, :, :i, :].view(q, -1).mT, dim=-1)  # tensor(n)
+        #                                 (n,q) x q -> n
+        # h_term = X[:, i, :].view(n_samples, -1) @ model.h[i]
+        # print("h_term", h_term.shape, ", ", h_term)
+        # #                                 (n,q) x q -> n
+        J_term = X[:, :i, :].view(n_samples, -1) @ model.J[i, :, :i, :].view(q, -1).mT 
+        J_term = (J_term * X[:, i, :]).sum(dim=-1)
+        # print("J_term", J_term.shape, ", ", J_term)
+        #                                       n,q x q -> n                     n,[:i]q x [:i]q, q -> n,q ->sum-> n
+        exponent = (X[:, i, :].view(n_samples, -1) @ model.h[i]) + J_term 
+        logP += exponent - logZ
+    return  - logP
+
+
 
 # Define the loss function
 def loss_fn(
@@ -102,8 +132,10 @@ def loss_fn(
     weights = (weights / weights.sum())
     log_likelihood = 0
     for i in range(1, model.L):
+        #                      q x q -> 1                    (q,[:i],q) x (q,[:i],q) -> 1
         energy_i = (fi_target[i] @ model.h[i]) + (model.J[i, :, :i, :] * fij_target[i, :, :i, :]).sum()
-        logZ_i = torch.logsumexp(model.h[i] + X[:, :i, :].view(n_samples, -1) @ model.J[i, :, :i, :].view(q, -1).mT, dim=-1) @ weights
+        #                                q                            n,[:i]q x [:i]q, q -> n,q                            n x n
+        logZ_i = torch.logsumexp(model.h[i] + X[:, :i, :].view(n_samples, -1) @ model.J[i, :, :i, :].view(q, -1).mT, dim=-1) @ weights # tensor(n)
         log_likelihood += energy_i - logZ_i
     
     return - log_likelihood + reg_h * torch.norm(model.h)**2 + reg_J * torch.norm(model.J)**2, - log_likelihood
@@ -278,6 +310,33 @@ class arDCA(nn.Module):
         prob_i = torch.softmax(beta * logit_i, dim=-1)
         
         return prob_i
+
+    def compute_stat_energy(
+        self,
+        X: torch.Tensor,
+        context: torch.Tensor = None,
+        beta: float = 1.0,
+    ) -> torch.Tensor:
+
+        if X.dim() != 3:
+            raise ValueError("X must be a 3D tensor")
+        if X.shape[1] != self.L:
+            raise ValueError("X must have a second dimension equal to L")
+        n_samples = X.shape[0]
+        stat_E = torch.zeros(n_samples)
+
+        if context is not None: 
+            X_use = torch.cat([context[:, :2*self.L//3, :], X[:, 2*self.L//3:, :]], dim=1)
+        else:
+            X_use = X
+        for residue_idx in range(2*self.L//3, self.L): 
+            prob_i = self.forward(X_use[:, :residue_idx, :], beta=beta)
+            logZ_i = torch.log(prob_i.sum(dim=-1) + 1e-10)
+            logP = torch.log(prob_i.gather(1, X_use[:, residue_idx, :].argmax(dim=1, keepdim=True)).squeeze() + 1e-10)
+            stat_E += - logP + logZ_i
+
+        return stat_E.detach()
+    
     
     def sample(
         self,
@@ -306,6 +365,7 @@ class arDCA(nn.Module):
         X = X[:, self.sorting, :]
             
         return X
+
 
     def sample_autoregressive(
         self,
@@ -441,7 +501,7 @@ class arDCA(nn.Module):
             fij_test = get_freq_two_points(X_test,  weights=weights_test, pseudo_count=pseudo_count)
 
         self.h.data = torch.log(fi_target + 1e-10)
-        callback = EarlyStopping(patience=50, epsconv=epsconv)
+        callback = EarlyStopping(patience=10, epsconv=epsconv)
 
         # Set Updating Bar
         pbar = tqdm(
@@ -505,7 +565,7 @@ class arDCA(nn.Module):
                         val_loss, val_log_likelihood = self.loss_fn(self, X_test, weights_test, fi_test, fij_test, reg_h=reg_h, reg_J=reg_J)
                         val_losses.append(val_loss.item())
                         val_log_likelihoods.append(val_log_likelihood.item())
-                        metrics['Val Loss'] = f"{val_loss:.5f}"
+                        metrics['Val Loss'] = f"{val_loss.item():.5f}"
 
                     samples = self.sample_autoregressive(X_test[:, :index, :]) 
                     data, data_target = samples[:, index:, :], X_test[:, index:, :]
@@ -609,6 +669,7 @@ class arDCA(nn.Module):
         metrics = {'Train Accuracy': "0.0"}
         if X_test is not None:
             metrics.update({'Test Accuracy': "0.0"})
+            metrics.update({'Loss Val': "Inf"})
             val_losses, val_log_likelihoods = [], []
         pbar.set_postfix(metrics)
 
@@ -677,11 +738,15 @@ class arDCA(nn.Module):
                         losses_val.append(epoch_loss_val)
                         log_likelihoods_val.append(epoch_log_likelihood_val)
 
-                        metrics['Val Loss'] = f"{epoch_loss_val:.5f}"
+                        # metrics['Val Loss'] = f"{:.5f}"
 
                         # Unisci tutti i batch in un unico tensore
                         test_acc /= len(test_loader)
-                        metrics = {'Train Accuracy': f"{train_acc:.5f}", 'Test Accuracy': f"{test_acc:.5f}"}
+                        metrics = {'Train Accuracy': f"{train_acc:.5f}", 'Test Accuracy': f"{test_acc:.5f}", 'Loss Val': f"{epoch_loss_val:.5f}"}
+
+                        # EARLY STOPPING ON VALIDATION
+                        # if callback(torch.tensor(epoch_loss_val)):
+                        #     break
                     else:
                         metrics = {'Train Accuracy': f"{train_acc:.5f}"}
                     
