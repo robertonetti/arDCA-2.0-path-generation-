@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='arDCA',
+    name='arDCA_paths',
     version='0.1.1',
     author='Jeanne Trinquier, Lorenzo Rosset, Francesco Zamponi, Martin Weigt',
     maintainer='Lorenzo Rosset',
@@ -10,7 +10,7 @@ setup(
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
     url='https://github.com/spqb/arDCA',
-    packages=find_packages(include=['arDCA', 'arDCA.*']),
+    packages=find_packages(include=['arDCA_paths', 'arDCA_paths.*']),
     include_package_data=True,
     python_requires='>=3.10',
     license_files=["LICENSE"],
@@ -21,7 +21,7 @@ setup(
     ],
     entry_points={
         'console_scripts': [
-            'arDCA=arDCA.cli:main',
+            'arDCA_paths=arDCA_paths.cli:main',
         ],
     },
     install_requires=[
